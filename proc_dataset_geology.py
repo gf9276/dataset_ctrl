@@ -2,6 +2,11 @@
 import argparse
 import json
 import os
+import sys
+
+curPath = os.path.abspath(os.path.dirname(__file__))  # 加入当前路径，直接执行有用
+rootPath = os.path.split(curPath)[0]
+sys.path.append(rootPath)
 import pathlib
 import random
 import time
@@ -9,6 +14,9 @@ from multiprocessing import cpu_count
 
 import h5py
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")  # 必须放在这个位置
 from matplotlib import pyplot as plt
 
 
@@ -18,7 +26,7 @@ def parse_args():
     :return:
     """
     parser = argparse.ArgumentParser(description='处理样本集')
-    parser.add_argument('--json', default="定边/定边预探井130_全井段_地质分层20230725/pre_proc.json",
+    parser.add_argument('--json', default="定边/定边预探井5_全井段_地质分层20230725/pre_proc.json",
                         help='json文件的路径')
     args = parser.parse_args()
     return args
@@ -100,7 +108,7 @@ class WellDatasetCtrls:
             self.slice_length = self.cfg_param["slice_length"]
 
         # 切片步长，默认为切片长度的2/3，但是最小值为1
-        self.slice_step = self.slice_length // 3  # 默认 / 3
+        self.slice_step = (2 * self.slice_length) // 3
         if "slice_step" in self.cfg_param.keys():
             self.slice_step = self.cfg_param["slice_step"]
         self.slice_step = max(1, self.slice_step)
@@ -125,7 +133,7 @@ class WellDatasetCtrls:
         if "label_type" in self.cfg_param.keys():
             self.label_type = self.cfg_param["label_type"]
 
-        # by wells or by slice 默认 slice
+        # by wells / by slice 默认 by slice
         self.dataset_divide_method = "by slice"
         if "dataset_divide_method" in self.cfg_param.keys():
             self.dataset_divide_method = self.cfg_param["dataset_divide_method"]
@@ -225,6 +233,7 @@ class WellDatasetCtrls:
         elif self.proc_method == "test":
             test_sliced_dataset = self.proc_sliced_dataset(sliced_dataset)
             self.save_dataset2h5("test", test_sliced_dataset)
+            self.analysis_label(test_sliced_dataset, "test")
         end_time = time.time()
         print("保存数据耗费时间：{}".format(end_time - start_time))
 
@@ -308,7 +317,8 @@ class WellDatasetCtrls:
         merged_dataset_outlier = {}
 
         for well_name in list(merged_dataset.keys()):
-            merged_dataset_outlier[well_name] = np.zeros((merged_dataset[well_name].shape[0])) != 0  # 生成一坨false，是否为异常值
+            # 生成一坨false，用于记录，该深度点数据是否存在异常值
+            merged_dataset_outlier[well_name] = np.zeros((merged_dataset[well_name].shape[0])) != 0
             # 先对深度进行处理
             # if "DEPTH" in self.features_name:
             #     # 获取DEPTH的idx
@@ -333,11 +343,11 @@ class WellDatasetCtrls:
                 if key_idx is not None:
                     # 可能有多个处理过程
                     # 和下面那个位置，二选一
-                    outlier_idx = (abs(merged_dataset[well_name][:, key_idx] - (-99999)) < 10) | np.isnan(merged_dataset[well_name][:, key_idx])
+                    outlier_idx = (abs(merged_dataset[well_name][:, key_idx] - (-99999)) < 10)
                     merged_dataset_outlier[well_name] |= (abs(merged_dataset[well_name][:, key_idx] - (-99999)) < 10)
                     for i in range(len(self.proc_info[key])):
                         # # 找到异常值，必须放在这里，有的异常值经过一次处理，就不会再处理第二次了
-                        # outlier_idx = (abs(merged_dataset[well_name][:, key_idx] - (-99999)) < 10) | np.isnan(merged_dataset[well_name][:, key_idx])
+                        # outlier_idx = (abs(merged_dataset[well_name][:, key_idx] - (-99999)) < 10)
                         # -----------------------------------------------------------------------------------------------------------------------------------
                         if self.proc_info[key][i][0] == "mn":
                             if len(self.proc_info[key][i]) >= 3:
@@ -463,6 +473,7 @@ class WellDatasetCtrls:
                     sliced_dataset[well_name]["label"] = sliced_dataset[well_name]["label"][normal_value_idx, :]
                     sliced_dataset[well_name]["features"] = sliced_dataset[well_name]["features"][normal_value_idx, :]
                     sliced_dataset[well_name]["multi_label"] = sliced_dataset[well_name]["multi_label"][normal_value_idx, :]
+                    sliced_dataset[well_name]["outlier"] = sliced_dataset[well_name]["outlier"][normal_value_idx]
 
         if remove_outlier_sliced:
             for well_name in list(sliced_dataset.keys()):
@@ -473,6 +484,7 @@ class WellDatasetCtrls:
                     sliced_dataset[well_name]["label"] = sliced_dataset[well_name]["label"][keep_sliced_idx, :]
                     sliced_dataset[well_name]["features"] = sliced_dataset[well_name]["features"][keep_sliced_idx, :]
                     sliced_dataset[well_name]["multi_label"] = sliced_dataset[well_name]["multi_label"][keep_sliced_idx, :]
+                    sliced_dataset[well_name]["outlier"] = sliced_dataset[well_name]["outlier"][keep_sliced_idx]
 
         # ----------------------------------------------------------训练集还是测试集---------------------------------------------------------
         if self.proc_method == "train":
@@ -491,30 +503,36 @@ class WellDatasetCtrls:
                     if i < train_wells_nbr:
                         train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
                                                            "label": sliced_dataset[well_name]["label"],
-                                                           "multi_label": sliced_dataset[well_name]["multi_label"]}
+                                                           "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                           "outlier": sliced_dataset[well_name]["outlier"]}
                     else:
                         val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
                                                          "label": sliced_dataset[well_name]["label"],
-                                                         "multi_label": sliced_dataset[well_name]["multi_label"]}
+                                                         "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                         "outlier": sliced_dataset[well_name]["outlier"]}
 
             else:
                 # 按照切片分预测值
                 all_sliced_features = np.concatenate(tuple(sliced_dataset[well_name]["features"] for well_name in sliced_dataset.keys()), 0)
                 all_sliced_label = np.concatenate(tuple(sliced_dataset[well_name]["label"] for well_name in sliced_dataset.keys()), 0)
                 all_sliced_multi_label = np.concatenate(tuple(sliced_dataset[well_name]["multi_label"] for well_name in sliced_dataset.keys()), 0)
+                all_sliced_outlier = np.concatenate(tuple(sliced_dataset[well_name]["outlier"] for well_name in sliced_dataset.keys()), 0)
                 # 打乱所有切片顺序
                 random_range = get_random_range(all_sliced_features.shape[0])
                 all_sliced_features = all_sliced_features[random_range]
                 all_sliced_label = all_sliced_label[random_range]
                 all_sliced_multi_label = all_sliced_multi_label[random_range]
+                all_sliced_outlier = all_sliced_outlier[random_range]
                 # 划分训练集和验证集
                 train_dataset_size = int(all_sliced_features.shape[0] * 0.9)
                 train_sliced_dataset = {"all_well": {"features": all_sliced_features[:train_dataset_size],
                                                      "label": (all_sliced_label[: train_dataset_size]),
-                                                     "multi_label": (all_sliced_multi_label[: train_dataset_size])}}
+                                                     "multi_label": (all_sliced_multi_label[: train_dataset_size]),
+                                                     "outlier": (all_sliced_outlier[: train_dataset_size])}}
                 val_sliced_dataset = {"all_well": {"features": all_sliced_features[train_dataset_size:],
                                                    "label": (all_sliced_label[train_dataset_size:]),
-                                                   "multi_label": (all_sliced_multi_label[train_dataset_size:])}}
+                                                   "multi_label": (all_sliced_multi_label[train_dataset_size:]),
+                                                   "outlier": (all_sliced_outlier[train_dataset_size:])}}
 
             return train_sliced_dataset, val_sliced_dataset
         elif self.proc_method == "test":
@@ -548,6 +566,6 @@ if __name__ == "__main__":
     set_seeds()
     my_args = parse_args()
     json_filepath = my_args.json
-    print("\n{}".format(json_filepath))
+    print("\nHi, {}".format(json_filepath))
     my_dataset_ctrl = WellDatasetCtrls(json_filepath)
     my_dataset_ctrl.proc_dataset()
