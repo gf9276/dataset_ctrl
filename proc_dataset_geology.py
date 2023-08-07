@@ -138,6 +138,9 @@ class WellDatasetCtrls:
         if "dataset_divide_method" in self.cfg_param.keys():
             self.dataset_divide_method = self.cfg_param["dataset_divide_method"]
 
+        self.train_wells_lst = self.cfg_param["train_wells_lst"] if "train_wells_lst" in self.cfg_param.keys() else []
+        self.val_wells_lst = self.cfg_param["val_wells_lst"] if "val_wells_lst" in self.cfg_param.keys() else []
+
         # 处理参数
         self.proc_info = self.cfg_param["proc_info"] if "proc_info" in self.cfg_param.keys() else {}
         self.add_padding = self.cfg_param["add_padding"] if "add_padding" in self.cfg_param.keys() else False
@@ -488,55 +491,84 @@ class WellDatasetCtrls:
 
         # ----------------------------------------------------------训练集还是测试集---------------------------------------------------------
         if self.proc_method == "train":
-            train_sliced_dataset = {}
-            val_sliced_dataset = {}
-
-            if self.dataset_divide_method == "by wells":
-                # 按井分训练集和预测集
-                wells_name = list(sliced_dataset.keys())
-                wells_nbr = len(list(sliced_dataset.keys()))
-                wells_dict = dict(zip(list(range(wells_nbr)), wells_name))
-                random_range = get_random_range(wells_nbr)
-                train_wells_nbr = int(wells_nbr * 0.9)
-                for i in range(wells_nbr):
-                    well_name = wells_dict[random_range[i]]
-                    if i < train_wells_nbr:
-                        train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
-                                                           "label": sliced_dataset[well_name]["label"],
-                                                           "multi_label": sliced_dataset[well_name]["multi_label"],
-                                                           "outlier": sliced_dataset[well_name]["outlier"]}
-                    else:
-                        val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
-                                                         "label": sliced_dataset[well_name]["label"],
-                                                         "multi_label": sliced_dataset[well_name]["multi_label"],
-                                                         "outlier": sliced_dataset[well_name]["outlier"]}
-
+            if len(self.train_wells_lst) == 0 and len(self.val_wells_lst) == 0:
+                # 都是空的直接就91开就行了
+                train_sliced_dataset, val_sliced_dataset = self.partition_train_and_val(sliced_dataset)
             else:
-                # 按照切片分预测值
-                all_sliced_features = np.concatenate(tuple(sliced_dataset[well_name]["features"] for well_name in sliced_dataset.keys()), 0)
-                all_sliced_label = np.concatenate(tuple(sliced_dataset[well_name]["label"] for well_name in sliced_dataset.keys()), 0)
-                all_sliced_multi_label = np.concatenate(tuple(sliced_dataset[well_name]["multi_label"] for well_name in sliced_dataset.keys()), 0)
-                all_sliced_outlier = np.concatenate(tuple(sliced_dataset[well_name]["outlier"] for well_name in sliced_dataset.keys()), 0)
-                # 打乱所有切片顺序
-                random_range = get_random_range(all_sliced_features.shape[0])
-                all_sliced_features = all_sliced_features[random_range]
-                all_sliced_label = all_sliced_label[random_range]
-                all_sliced_multi_label = all_sliced_multi_label[random_range]
-                all_sliced_outlier = all_sliced_outlier[random_range]
-                # 划分训练集和验证集
-                train_dataset_size = int(all_sliced_features.shape[0] * 0.9)
-                train_sliced_dataset = {"all_well": {"features": all_sliced_features[:train_dataset_size],
-                                                     "label": (all_sliced_label[: train_dataset_size]),
-                                                     "multi_label": (all_sliced_multi_label[: train_dataset_size]),
-                                                     "outlier": (all_sliced_outlier[: train_dataset_size])}}
-                val_sliced_dataset = {"all_well": {"features": all_sliced_features[train_dataset_size:],
-                                                   "label": (all_sliced_label[train_dataset_size:]),
-                                                   "multi_label": (all_sliced_multi_label[train_dataset_size:]),
-                                                   "outlier": (all_sliced_outlier[train_dataset_size:])}}
+                # 如果有一个不空
+                wells_name = list(sliced_dataset.keys())
+                train_sliced_dataset = {}
+                val_sliced_dataset = {}
+                if len(self.val_wells_lst) == 0:
+                    self.val_wells_lst = list(set(wells_name) - set(self.train_wells_lst))
+                    if len(self.val_wells_lst) == 0:
+                        self.val_wells_lst.append(self.train_wells_lst[0])
+                elif len(self.train_wells_lst) == 0:
+                    self.train_wells_lst = list(set(wells_name) - set(self.val_wells_lst))
+                    if len(self.train_wells_lst) == 0:
+                        self.train_wells_lst.append(self.val_wells_lst[0])
+                for well_name in self.train_wells_lst:
+                    train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                                       "label": sliced_dataset[well_name]["label"],
+                                                       "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                       "outlier": sliced_dataset[well_name]["outlier"]}
+                for well_name in self.val_wells_lst:
+                    val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                                     "label": sliced_dataset[well_name]["label"],
+                                                     "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                     "outlier": sliced_dataset[well_name]["outlier"]}
 
             return train_sliced_dataset, val_sliced_dataset
         elif self.proc_method == "test":
             return sliced_dataset
+
+    def partition_train_and_val(self, sliced_dataset):
+        train_sliced_dataset = {}
+        val_sliced_dataset = {}
+        if self.dataset_divide_method == "by wells":
+            # 按井分训练集和预测集
+            wells_name = list(sliced_dataset.keys())
+            wells_nbr = len(list(sliced_dataset.keys()))
+            wells_dict = dict(zip(list(range(wells_nbr)), wells_name))
+            random_range = get_random_range(wells_nbr)
+            train_wells_nbr = int(wells_nbr * 0.9)
+            for i in range(wells_nbr):
+                well_name = wells_dict[random_range[i]]
+                if i < train_wells_nbr:
+                    train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                                       "label": sliced_dataset[well_name]["label"],
+                                                       "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                       "outlier": sliced_dataset[well_name]["outlier"]}
+                else:
+                    val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                                     "label": sliced_dataset[well_name]["label"],
+                                                     "multi_label": sliced_dataset[well_name]["multi_label"],
+                                                     "outlier": sliced_dataset[well_name]["outlier"]}
+
+        else:
+            # 按照切片分预测值
+            all_sliced_features = np.concatenate(tuple(sliced_dataset[well_name]["features"] for well_name in sliced_dataset.keys()), 0)
+            all_sliced_label = np.concatenate(tuple(sliced_dataset[well_name]["label"] for well_name in sliced_dataset.keys()), 0)
+            all_sliced_multi_label = np.concatenate(tuple(sliced_dataset[well_name]["multi_label"] for well_name in sliced_dataset.keys()), 0)
+            all_sliced_outlier = np.concatenate(tuple(sliced_dataset[well_name]["outlier"] for well_name in sliced_dataset.keys()), 0)
+            # 打乱所有切片顺序
+            random_range = get_random_range(all_sliced_features.shape[0])
+            all_sliced_features = all_sliced_features[random_range]
+            all_sliced_label = all_sliced_label[random_range]
+            all_sliced_multi_label = all_sliced_multi_label[random_range]
+            all_sliced_outlier = all_sliced_outlier[random_range]
+            # 划分训练集和验证集
+            train_dataset_size = int(all_sliced_features.shape[0] * 0.9)
+            train_sliced_dataset = {"all_well": {"features": all_sliced_features[:train_dataset_size],
+                                                 "label": (all_sliced_label[: train_dataset_size]),
+                                                 "multi_label": (all_sliced_multi_label[: train_dataset_size]),
+                                                 "outlier": (all_sliced_outlier[: train_dataset_size])}}
+            val_sliced_dataset = {"all_well": {"features": all_sliced_features[train_dataset_size:],
+                                               "label": (all_sliced_label[train_dataset_size:]),
+                                               "multi_label": (all_sliced_multi_label[train_dataset_size:]),
+                                               "outlier": (all_sliced_outlier[train_dataset_size:])}}
+
+        return train_sliced_dataset, val_sliced_dataset
 
     def save_dataset2h5(self, file_stem, sliced_dataset):
         """
