@@ -26,8 +26,8 @@ def parse_args():
     :return:
     """
     parser = argparse.ArgumentParser(description='处理样本集')
-    parser.add_argument('--json', default="定边/定边预探井5_全井段_地质分层20230725/pre_proc.json",
-                        help='json文件的路径')
+    parser.add_argument('--json', default="定边/定边预探井130_全井段_地质分层20230725/pre_proc.json", help='json文件的路径')
+    parser.add_argument('--draw_plt', default="False", help='是否绘图')
     args = parser.parse_args()
     return args
 
@@ -92,12 +92,14 @@ def sava_data2h5(h5_filepath, sliced_dataset, grp_name):
 
 
 class WellDatasetCtrls:
-    def __init__(self, json_cfg_filepath):
+    def __init__(self, json_cfg_filepath, draw_plt):
         """
         根据json文件路径和初始化
         :param json_cfg_filepath:
+        :param draw_plt:
         """
         self.json_cfg_filepath = json_cfg_filepath
+        self.draw_plt = draw_plt
         self.cfg_param = read_json(json_cfg_filepath)  # 读取配置
         self.proc_nbr = cpu_count()  # 全速前进！
 
@@ -138,8 +140,8 @@ class WellDatasetCtrls:
         if "dataset_divide_method" in self.cfg_param.keys():
             self.dataset_divide_method = self.cfg_param["dataset_divide_method"]
 
-        self.train_wells_lst = self.cfg_param["train_wells_lst"] if "train_wells_lst" in self.cfg_param.keys() else []
-        self.val_wells_lst = self.cfg_param["val_wells_lst"] if "val_wells_lst" in self.cfg_param.keys() else []
+        self.train_set_list = list(set(self.cfg_param["train_set_list"])) if "train_set_list" in self.cfg_param.keys() else []
+        self.val_set_list = list(set(self.cfg_param["val_set_list"])) if "val_set_list" in self.cfg_param.keys() else []
 
         # 处理参数
         self.proc_info = self.cfg_param["proc_info"] if "proc_info" in self.cfg_param.keys() else {}
@@ -175,6 +177,8 @@ class WellDatasetCtrls:
         return sliced_dataset
 
     def analysis_label(self, sliced_dataset, title="unknown"):
+        if not self.draw_plt:
+            return
         for well_name in sliced_dataset.keys():
             label = sliced_dataset[well_name]["label"]
             values, cnt = np.unique(label, return_counts=True)
@@ -491,38 +495,52 @@ class WellDatasetCtrls:
 
         # ----------------------------------------------------------训练集还是测试集---------------------------------------------------------
         if self.proc_method == "train":
-            if len(self.train_wells_lst) == 0 and len(self.val_wells_lst) == 0:
-                # 都是空的直接就91开就行了
-                train_sliced_dataset, val_sliced_dataset = self.partition_train_and_val(sliced_dataset)
+            if len(self.train_set_list) == 0 and len(self.val_set_list) == 0:
+                train_sliced_dataset, val_sliced_dataset = self.partition_dataset(sliced_dataset)
             else:
-                # 如果有一个不空
-                wells_name = list(sliced_dataset.keys())
-                train_sliced_dataset = {}
-                val_sliced_dataset = {}
-                if len(self.val_wells_lst) == 0:
-                    self.val_wells_lst = list(set(wells_name) - set(self.train_wells_lst))
-                    if len(self.val_wells_lst) == 0:
-                        self.val_wells_lst.append(self.train_wells_lst[0])
-                elif len(self.train_wells_lst) == 0:
-                    self.train_wells_lst = list(set(wells_name) - set(self.val_wells_lst))
-                    if len(self.train_wells_lst) == 0:
-                        self.train_wells_lst.append(self.val_wells_lst[0])
-                for well_name in self.train_wells_lst:
-                    train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
-                                                       "label": sliced_dataset[well_name]["label"],
-                                                       "multi_label": sliced_dataset[well_name]["multi_label"],
-                                                       "outlier": sliced_dataset[well_name]["outlier"]}
-                for well_name in self.val_wells_lst:
-                    val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
-                                                     "label": sliced_dataset[well_name]["label"],
-                                                     "multi_label": sliced_dataset[well_name]["multi_label"],
-                                                     "outlier": sliced_dataset[well_name]["outlier"]}
+                train_sliced_dataset, val_sliced_dataset = self.specify_partition_dataset(sliced_dataset)
 
             return train_sliced_dataset, val_sliced_dataset
+
         elif self.proc_method == "test":
             return sliced_dataset
 
-    def partition_train_and_val(self, sliced_dataset):
+    def specify_partition_dataset(self, sliced_dataset):
+        """
+        指定划分数据集
+        :param sliced_dataset:
+        :return:
+        """
+        wells_name = list(sliced_dataset.keys())
+        train_sliced_dataset = {}
+        val_sliced_dataset = {}
+        if len(self.val_set_list) == 0:
+            self.val_set_list = list(set(wells_name) - set(self.train_set_list))
+            if len(self.val_set_list) == 0:
+                self.val_set_list.append(self.train_set_list[0])
+        elif len(self.train_set_list) == 0:
+            self.train_set_list = list(set(wells_name) - set(self.val_set_list))
+            if len(self.train_set_list) == 0:
+                self.train_set_list.append(self.val_set_list[0])
+        for well_name in self.train_set_list:
+            train_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                               "label": sliced_dataset[well_name]["label"],
+                                               "multi_label": sliced_dataset[well_name]["multi_label"],
+                                               "outlier": sliced_dataset[well_name]["outlier"]}
+        for well_name in self.val_set_list:
+            val_sliced_dataset[well_name] = {"features": sliced_dataset[well_name]["features"],
+                                             "label": sliced_dataset[well_name]["label"],
+                                             "multi_label": sliced_dataset[well_name]["multi_label"],
+                                             "outlier": sliced_dataset[well_name]["outlier"]}
+
+        return train_sliced_dataset, val_sliced_dataset
+
+    def partition_dataset(self, sliced_dataset):
+        """
+        划分数据集
+        :param sliced_dataset:
+        :return:
+        """
         train_sliced_dataset = {}
         val_sliced_dataset = {}
         if self.dataset_divide_method == "by wells":
@@ -599,5 +617,5 @@ if __name__ == "__main__":
     my_args = parse_args()
     json_filepath = my_args.json
     print("\nHi, {}".format(json_filepath))
-    my_dataset_ctrl = WellDatasetCtrls(json_filepath)
+    my_dataset_ctrl = WellDatasetCtrls(json_filepath, (my_args.draw_plt == "True"))
     my_dataset_ctrl.proc_dataset()
